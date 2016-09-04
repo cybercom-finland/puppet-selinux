@@ -1,22 +1,25 @@
 require 'spec_helper'
 
 describe 'selinux::module' do
-  let(:title) { 'mymodule' }
+  mymodule = 'mymodule'
+  let(:title) { mymodule }
   include_context 'RedHat 7'
 
   context 'present case' do
     let(:params) do
       {
-        source: 'puppet:///modules/mymodule/selinux/mymodule.te'
+        source: "puppet:///modules/#{mymodule}/selinux"
       }
     end
 
     it do
-      should contain_file('/usr/share/selinux/local_mymodule.te').that_notifies('Exec[/usr/share/selinux/local_mymodule.pp]')
+      should contain_file("/usr/share/selinux/#{mymodule}").with(ensure: 'directory')
 
-      should contain_exec('/usr/share/selinux/local_mymodule.pp').with(command: 'make -f /usr/share/selinux/devel/Makefile local_mymodule.pp')
+      should contain_file("/usr/share/selinux/#{mymodule}/#{mymodule}.te").that_notifies("Exec[/usr/share/selinux/#{mymodule}/#{mymodule}.pp]")
 
-      should contain_selmodule('mymodule').with_ensure('present')
+      should contain_exec("/usr/share/selinux/#{mymodule}/#{mymodule}.pp").with(command: 'make -f /usr/share/selinux/devel/Makefile')
+
+      should contain_selmodule(mymodule).with_ensure('present')
     end
   end  # context
 
@@ -28,7 +31,8 @@ describe 'selinux::module' do
     end
 
     it do
-      should contain_selmodule('mymodule').with_ensure('absent')
+      should contain_file("/usr/share/selinux/#{mymodule}").with(ensure: 'absent')
+      should contain_selmodule(mymodule).with_ensure('absent')
     end
   end  # context
 end # describe

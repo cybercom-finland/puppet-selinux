@@ -11,28 +11,26 @@
 # Parameters:
 #   - $ensure: (present|absent) - sets the state for a module
 #   - $sx_mod_dir (absolute_path) - sets the operating state for SELinux.
-#   - $source: the source file (either a puppet URI or local file) of the SELinux .te module
+#   - $source: the source directory (either a puppet URI or local
+#              directory) where .te and .fc file resides
 #   - $makefile: the makefile file path
-#   - $prefix: the prefix to add to the loaded module. Defaults to 'local_'.
 #
 # Actions:
 #  Compiles a module using make and installs it
 #
 # Requires:
-#  - SELinux
+#  - SELinux developement tools
 #
 # Sample Usage:
 #  selinux::module{ 'apache':
 #    ensure => 'present',
-#    source => 'puppet:///modules/selinux/apache.te',
+#    source => 'puppet:///modules/selinux/apache/',
 #  }
 #
 define selinux::module(
   $source       = undef,
-  $content      = undef,
   $ensure       = 'present',
   $makefile     = '/usr/share/selinux/devel/Makefile',
-  $prefix       = 'local_',
   $sx_mod_dir   = '/usr/share/selinux',
   $syncversion  = true,
 ) {
@@ -40,16 +38,9 @@ define selinux::module(
   include ::selinux
 
   validate_re($ensure, [ '^present$', '^absent$' ], '$ensure must be "present" or "absent"')
-  if $ensure == 'present' and $source == undef and $content == undef {
-    fail("You must provide 'source' or 'content' field for selinux module")
-  }
   if $source != undef {
     validate_string($source)
   }
-  if $content != undef {
-    validate_string($content)
-  }
-  validate_string($prefix)
   validate_absolute_path($sx_mod_dir)
   validate_absolute_path($makefile)
   validate_bool($syncversion)
@@ -59,29 +50,81 @@ define selinux::module(
     default           => $::selinux_custom_policy,
   }
 
-  ## Begin Configuration
-  file { "${sx_mod_dir}/${prefix}${name}.te":
-    ensure  => $ensure,
-    owner   => 'root',
-    group   => 'root',
-    mode    => '0644',
-    source  => $source,
-    content => $content,
+  # .te and .fc files will be placed on a $name directory
+  $this_module_dir = "${sx_mod_dir}/${name}"
+
+  if $source {
+    $sourcedir = $source
+  } else {
+    $sourcedir = "puppet:///modules/selinux/${name}"
   }
-  ~>
-  exec { "${sx_mod_dir}/${prefix}${name}.pp":
-  # Only allow refresh in the event that the initial .te file is updated.
-    command     => shellquote('make', '-f', $makefile, "${prefix}${name}.pp"),
-    path        => '/bin:/sbin:/usr/bin:/usr/sbin',
-    refreshonly => true,
-    cwd         => $sx_mod_dir,
+
+  # sourcedir validation
+  # we only accept puppet:///modules/<something>/<something>, file:///anything
+  # we reject .te
+  case $sourcedir {
+    /^puppet:\/\/\/modules\/.*\.te$/: {
+      fail('Invalid source parameter, expecting a directory')
+    }
+    /^puppet:\/\/\/modules\/[^\/]+\/[^\/]+\/?$/: { }
+    /^file:\/\/\/.*$/: { }
+    default: {
+      fail('Invalid source parameter')
+    }
   }
-  ->
-  selmodule { $name:
-    # Load the module if it has changed or was not loaded
-    # Warning: change the .te version!
-    ensure        => $ensure,
-    selmodulepath => "${sx_mod_dir}/${prefix}${name}.pp",
-    syncversion   => $syncversion,
+
+  # Set Resource Defaults
+  File {
+    owner => 'root',
+    group => 'root',
+    mode  => '0640',
+  }
+
+  # Only allow refresh in the event that the initial source files are updated.
+  Exec {
+    path => '/sbin:/usr/sbin:/bin:/usr/bin',
+    cwd  => $this_module_dir,
+  }
+
+  $active_modules = '/etc/selinux/targeted/modules/active/modules'
+  $active_pp = "${active_modules}/${name}.pp"
+  $compiled_pp = "${this_module_dir}/${name}.pp"
+  case $ensure {
+    'present': {
+      file { $this_module_dir:
+        ensure  => directory,
+        source  => $sourcedir,
+        recurse => remote,
+      }
+      ->
+      file { "${this_module_dir}/${name}.te":
+        ensure => file,
+        source => "${sourcedir}/${name}.te",
+      }
+      ~>
+      exec { $compiled_pp:
+        command     => shellquote('make', '-f', $makefile),
+        refreshonly => true,
+      }
+      ~>
+      selmodule { $name:
+        ensure        => present,
+        selmodulepath => $compiled_pp,
+        syncversion   => true,
+      }
+    }
+    'absent': {
+      selmodule { $name:
+        ensure => $ensure,
+      }
+      file { $this_module_dir:
+        ensure => absent,
+        purge  => true,
+        force  => true,
+      }
+    }
+    default: {
+      fail("Selinux::Module: Invalid status: ${ensure}")
+    }
   }
 }
