@@ -17,8 +17,8 @@
 #
 # Parameters:
 #   - $context: A particular network port context, like "syslogd_port_t"
-#   - $protocol: Either tcp or udp. If unset, omits -p flag from semanage.
-#   - $port: An network port number, like '8514'
+#   - $protocol: Either tcp or udp
+#   - $port: An network port number or range, like '8514' or '10000-20000'
 #
 # Actions:
 #  Runs "semanage port" with options to persistently set the file context
@@ -38,26 +38,18 @@
 define selinux::port (
   $context,
   $port,
-  $protocol = undef,
+  $protocol,
 ) {
 
   include ::selinux
 
-  if $protocol {
-    validate_re($protocol, ['^tcp6?$', '^udp6?$'])
-    $protocol_switch = ['-p', $protocol]
-    $protocol_check = "${protocol} "
-    $port_exec_command = "add_${context}_${port}_${protocol}"
-  } else {
-    $protocol_switch = []
-    $protocol_check = '' # lint:ignore:empty_string_assignment variable is used to create regexp and undef is not possible
-    $port_exec_command = "add_${context}_${port}"
-  }
+  # Use x trick so that lint etc do not warn about quoted string
+  validate_re("x${port}", ['^x\d+$', '^x\d+-\d+$'])
+  validate_re($protocol, ['^tcp$', '^udp$'])
 
-  exec { $port_exec_command:
-    command => shellquote('semanage', 'port', '-a', '-t', $context, $protocol_switch, "${port}"), # lint:ignore:only_variable_string port can be number and we need to force it to be string for shellquote
-    # This works because there seems to be more than one space after protocol and before first port
-    unless  => sprintf('semanage port -l | grep -E %s', shellquote("^${context}  *${protocol_check}.* ${port}(\$|,)")),
+  exec { "add_${context}_${port}_${protocol}":
+    command => shellquote('semanage', 'port', '-a', '-t', $context, '-p', $protocol, "${port}"), # lint:ignore:only_variable_string port can be number and we need to force it to be string for shellquote
+    unless  => sprintf('semanage port -E | grep -Fx %s', shellquote("port -a -t ${context} -p ${protocol} ${port}")),
     path    => '/bin:/sbin:/usr/bin:/usr/sbin',
     require => Class['selinux::package'],
   }
